@@ -1,0 +1,226 @@
+
+<style>
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+@keyframes slideIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }
+</style>
+<h2 class="sr-only">RAG Architecture interactive flow diagram showing document ingestion, query processing, and generation phases</h2>
+<div id="root" style="font-family:var(--font-sans,system-ui,sans-serif);padding:1rem 0"></div>
+<script>
+const PHASES=[
+  {id:"ingest",label:"Document Ingestion",color:"#7F77DD",lightColor:"#EEEDFE",border:"#534AB7"},
+  {id:"query",label:"Query Processing",color:"#1D9E75",lightColor:"#E1F5EE",border:"#0F6E56"},
+  {id:"generate",label:"Generation",color:"#D85A30",lightColor:"#FAECE7",border:"#993C1D"},
+];
+const PHASE_STEPS={
+  ingest:[
+    {id:"sources",label:"Data Sources",sub:"PDF · DB · Web · APIs",icon:"📄"},
+    {id:"chunk",label:"Chunking",sub:"Split into segments",icon:"✂️"},
+    {id:"embed",label:"Embedding Model",sub:"Text → dense vectors",icon:"🧮"},
+    {id:"vecdb",label:"Vector DB",sub:"Store & index embeddings",icon:"🗄️"},
+  ],
+  query:[
+    {id:"user",label:"User Query",sub:"Natural language input",icon:"🙋"},
+    {id:"qembed",label:"Query Embedding",sub:"Vectorize the question",icon:"🔢"},
+    {id:"sim",label:"Similarity Search",sub:"kNN over vector DB",icon:"🔍"},
+    {id:"ctx",label:"Augmented Context",sub:"Top-k chunks + query",icon:"📋"},
+  ],
+  generate:[
+    {id:"llm",label:"LLM",sub:"GPT-4 / Claude",icon:"🤖"},
+    {id:"answer",label:"Generated Answer",sub:"Grounded RAG response",icon:"💬"},
+  ],
+};
+const STEP_ORDER=["sources","chunk","embed","vecdb","user","qembed","sim","ctx","llm","answer"];
+const CROSS=[
+  {from:"vecdb",to:"sim",label:"vector lookup",fromPhase:"ingest",toPhase:"query"},
+  {from:"ctx",to:"llm",label:"context + prompt",fromPhase:"query",toPhase:"generate"},
+];
+const STEP_DUR=1400;
+const TOTAL_DUR=STEP_ORDER.length*STEP_DUR;
+
+let state={playing:false,elapsed:0,activeStep:null,rafId:null,startTs:null};
+
+function isDark(){return window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;}
+const D=isDark();
+const c={
+  tp:D?"#e8e6dc":"#1a1a18",
+  ts:D?"#9c9a92":"#6b6b67",
+  bg:D?"#1e1e1c":"#ffffff",
+  bgs:D?"#2a2a28":"#f4f3ef",
+  brd:D?"rgba(255,255,255,0.1)":"rgba(0,0,0,0.09)",
+};
+
+function activatedSet(){
+  const idx=state.playing
+    ?Math.min(Math.floor(state.elapsed/STEP_DUR),STEP_ORDER.length-1)
+    :state.activeStep?STEP_ORDER.indexOf(state.activeStep):-1;
+  return new Set(STEP_ORDER.slice(0,idx+1));
+}
+function currentId(){
+  if(state.playing){
+    const i=Math.min(Math.floor(state.elapsed/STEP_DUR),STEP_ORDER.length-1);
+    return STEP_ORDER[i];
+  }
+  return state.activeStep;
+}
+
+function render(){
+  const acts=activatedSet();
+  const cur=currentId();
+  const idx=STEP_ORDER.indexOf(cur);
+  const pct=Math.min((state.elapsed/TOTAL_DUR)*100,100);
+
+  const phaseColor=(pid)=>PHASES.find(p=>p.id===pid);
+  const stepPhase=(sid)=>{for(const[ph,steps]of Object.entries(PHASE_STEPS))for(const s of steps)if(s.id===sid)return ph;};
+
+  const nodeHTML=(step,phaseId)=>{
+    const ph=phaseColor(phaseId);
+    const active=acts.has(step.id);
+    const isCur=cur===step.id;
+    const bg=active?(D?ph.border+"33":ph.lightColor):c.bg;
+    const bc=active?ph.border:c.brd;
+    const bw=isCur?"2px":"0.5px";
+    const shadow=isCur?`0 0 0 3px ${ph.color}44`:"none";
+    const scale=isCur?"scale(1.04)":"scale(1)";
+    const tc=active?(D?"#fff":ph.border):c.tp;
+    const sc=active?(D?ph.color+"bb":ph.border+"99"):c.ts;
+    return`<div onclick="clickStep('${step.id}')" style="background:${bg};border:${bw} solid ${bc};border-radius:10px;padding:10px 8px;cursor:pointer;transition:all 0.35s;box-shadow:${shadow};transform:${scale};animation:${isCur?"pulse 1s ease-in-out infinite":"none"}">
+      <div style="font-size:22px;text-align:center;margin-bottom:4px">${step.icon}</div>
+      <div style="font-size:12px;font-weight:500;text-align:center;color:${tc};line-height:1.3">${step.label}</div>
+      <div style="font-size:10px;text-align:center;color:${sc};margin-top:2px;line-height:1.3">${step.sub}</div>
+    </div>`;
+  };
+
+  const arrowHTML=(phaseId,nextActive)=>{
+    const ph=phaseColor(phaseId);
+    const bc=nextActive?ph.color:c.brd;
+    return`<div style="display:flex;flex-direction:column;align-items:center;gap:0;margin:2px 0">
+      <div style="width:2px;height:12px;background:${bc};transition:background 0.4s;border-radius:1px"></div>
+      <div style="width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid ${bc};transition:border-top-color 0.4s"></div>
+    </div>`;
+  };
+
+  const phaseHTML=(ph)=>{
+    const steps=PHASE_STEPS[ph.id];
+    let inner="";
+    for(let i=0;i<steps.length;i++){
+      inner+=nodeHTML(steps[i],ph.id);
+      if(i<steps.length-1){
+        const nextAct=acts.has(steps[i].id)&&acts.has(steps[i+1].id);
+        inner+=arrowHTML(ph.id,nextAct);
+      }
+    }
+    return`<div style="background:${c.bgs};border-radius:14px;border:0.5px solid ${c.brd};padding:14px 10px;display:flex;flex-direction:column;gap:6px">${inner}</div>`;
+  };
+
+  const crossHTML=(cr)=>{
+    const fa=acts.has(cr.from);
+    const ta=acts.has(cr.to);
+    const active=fa&&ta;
+    const fph=phaseColor(cr.fromPhase);
+    const tph=phaseColor(cr.toPhase);
+    const lineColor=active?`linear-gradient(90deg,${fph.color},${tph.color})`:c.brd;
+    const textC=active?fph.border:c.ts;
+    const text2C=active?tph.border:c.ts;
+    return`<div style="background:${c.bgs};border-radius:10px;border:0.5px solid ${c.brd};padding:10px 14px;display:flex;align-items:center;gap:10px">
+      <span style="font-size:11px;font-weight:500;color:${textC};white-space:nowrap;transition:color 0.4s">${PHASE_STEPS[cr.fromPhase].find(s=>s.id===cr.from).label}</span>
+      <div style="flex:1;position:relative;height:2px;background:${active?"#ccc":c.brd};border-radius:2px;overflow:hidden">
+        <div style="position:absolute;inset:0;background:${lineColor};transition:background 0.4s"></div>
+        ${active?`<div style="position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.5),transparent);animation:slideIn 1.2s linear infinite;width:40%;"></div>`:""}
+      </div>
+      <span style="font-size:10px;color:${active?fph.color:c.ts};white-space:nowrap">▶</span>
+      <span style="font-size:11px;font-weight:500;color:${text2C};white-space:nowrap;transition:color 0.4s">${PHASE_STEPS[cr.toPhase].find(s=>s.id===cr.to).label}</span>
+    </div>`;
+  };
+
+  const playLabel=state.playing?"⏹ Stop":(state.elapsed>0&&state.elapsed<TOTAL_DUR?"▶ Resume":"▶ Play flow");
+  const stepLabel=idx>=0?`Step ${idx+1} / ${STEP_ORDER.length}: ${[...Object.values(PHASE_STEPS)].flat().find(s=>s.id===cur)?.label||""}`:"Click a node or press play";
+
+  document.getElementById("root").innerHTML=`
+    <div style="margin-bottom:4px;display:flex;justify-content:space-between;align-items:baseline">
+      <div>
+        <span style="font-size:18px;font-weight:500;color:${c.tp}">RAG Architecture</span>
+        <span style="font-size:11px;color:${c.ts};margin-left:8px">Retrieval-Augmented Generation</span>
+      </div>
+    </div>
+    <p style="font-size:12px;color:${c.ts};margin:0 0 14px">Click any node to trace the flow, or press Play to animate the full pipeline</p>
+
+    <!-- Phase labels -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+      ${PHASES.map(p=>`<div style="background:${D?p.border+"22":p.lightColor};border:1px solid ${p.border}44;border-radius:8px;padding:5px 10px;text-align:center"><span style="font-size:11px;font-weight:500;color:${p.border}">${p.label}</span></div>`).join("")}
+    </div>
+
+    <!-- Phase columns -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+      ${PHASES.map(p=>phaseHTML(p)).join("")}
+    </div>
+
+    <!-- Cross-phase connections -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+      ${CROSS.map(cr=>crossHTML(cr)).join("")}
+    </div>
+
+    <!-- Progress -->
+    ${state.playing?`<div style="height:3px;background:${c.brd};border-radius:3px;margin-top:12px;overflow:hidden"><div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#7F77DD,#1D9E75,#D85A30);border-radius:3px;transition:width 0.1s linear"></div></div>`:""}
+
+    <!-- Controls -->
+    <div style="display:flex;gap:10px;margin-top:14px;align-items:center">
+      <button onclick="togglePlay()" style="padding:8px 18px;background:${state.playing?c.bgs:"#7F77DD"};color:${state.playing?c.tp:"#fff"};border:${state.playing?`0.5px solid ${c.brd}`:"none"};border-radius:8px;font-size:13px;font-weight:500;cursor:pointer">${playLabel}</button>
+      <button onclick="doReset()" style="padding:8px 12px;background:transparent;color:${c.ts};border:0.5px solid ${c.brd};border-radius:8px;font-size:13px;cursor:pointer">Reset</button>
+      <span style="font-size:11px;color:${c.ts};margin-left:auto">${stepLabel}</span>
+    </div>
+
+    <!-- Legend -->
+    <div style="display:flex;gap:14px;margin-top:12px">
+      ${PHASES.map(p=>`<div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:3px;background:${p.color}"></div><span style="font-size:11px;color:${c.ts}">${p.label}</span></div>`).join("")}
+    </div>
+  `;
+}
+
+function clickStep(id){
+  if(state.playing)return;
+  state.activeStep=state.activeStep===id?null:id;
+  render();
+}
+window.clickStep=clickStep;
+
+function startRaf(){
+  state.startTs=null;
+  function tick(ts){
+    if(!state.startTs)state.startTs=ts-state.elapsed;
+    state.elapsed=ts-state.startTs;
+    if(state.elapsed>=TOTAL_DUR){
+      state.elapsed=TOTAL_DUR;
+      state.playing=false;
+      render();
+      return;
+    }
+    render();
+    state.rafId=requestAnimationFrame(tick);
+  }
+  state.rafId=requestAnimationFrame(tick);
+}
+
+function togglePlay(){
+  if(state.playing){
+    state.playing=false;
+    cancelAnimationFrame(state.rafId);
+    render();
+  } else {
+    if(state.elapsed>=TOTAL_DUR)state.elapsed=0;
+    state.playing=true;
+    startRaf();
+  }
+}
+window.togglePlay=togglePlay;
+
+function doReset(){
+  state.playing=false;
+  state.elapsed=0;
+  state.activeStep=null;
+  cancelAnimationFrame(state.rafId);
+  render();
+}
+window.doReset=doReset;
+
+render();
+</script>

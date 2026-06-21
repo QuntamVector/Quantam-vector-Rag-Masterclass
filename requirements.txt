@@ -28,3 +28,5 @@ langgraph
 langchain-text-splitters
 python-docx
 docx2txt
+streamlit
+langchain_ollama
